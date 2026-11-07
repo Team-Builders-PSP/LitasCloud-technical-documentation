@@ -1,0 +1,2114 @@
+openapi: 3.0.3
+info:
+  title: LitasCloud API Contract
+  version: 1.0.0
+  description: |
+    API contract of **LitasCloud** (Technical Specification, Section 6). It defines every interface
+    between the four separate modules (NFR-18): the **Browser Client** (Player), the **Host Agent**
+    (Host's Windows 10/11 PC), the **Signaling Server** (operator) and the **Recording Agent**
+    (operator). Requirement IDs (M1, S3, C7, NFR-06, ...) refer to Sections 2 and 4 of the
+    specification.
+servers:
+  - url: http://localhost:8000
+    description: Local development (WebSocket at ws://localhost:8000/ws)
+  - url: https://litascloud.example.com
+    description: Production, placeholder address (WebSocket at wss://litascloud.example.com/ws)
+tags:
+  - name: Authentication
+    description: Registration and login (M8).
+  - name: Account
+    description: Credit balance of the logged-in account (S4).
+  - name: Offerings
+    description: List of PCs that Hosts currently offer (M2, C5). Hosts create offerings over the WebSocket (M1).
+  - name: Sessions
+    description: Session history (C9).
+  - name: Reports
+    description: Ratings and problem reports after a session (C7).
+  - name: WebSocket
+    description: Signaling, join requests and session events (M1, M2, M3, M6, M12, M13).
+paths:
+  /auth/register:
+    post:
+      tags: [Authentication]
+      operationId: registerAccount
+      summary: Create an account (M8)
+      description: |
+        Creates a Host or Player account. The username must be unique. The password is stored only
+        as a salted hash (NFR-11). The Recording Agent has no account and cannot be registered here.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              username: jonas_p
+              password: correct-horse-battery
+              role: PLAYER
+      responses:
+        "201":
+          description: Account created. Log in with `POST /auth/login` to get a token.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountResponse"
+              example:
+                accountId: 3f2b8c1e-5d4a-4e7b-9a10-2c6d8e4f7a11
+                username: jonas_p
+                role: PLAYER
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: The username is already taken.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                errorCode: USERNAME_TAKEN
+                message: This username is already taken. Choose another one.
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /auth/login:
+    post:
+      tags: [Authentication]
+      operationId: login
+      summary: Log in and get an access token (M8)
+      description: |
+        Failed logins are limited to 5 per minute per IP address (NFR-11). After that the server
+        answers `429 RATE_LIMITED` with a `Retry-After` header until the minute is over.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              username: jonas_p
+              password: correct-horse-battery
+      responses:
+        "200":
+          description: Login succeeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+              example:
+                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.example.signature
+                tokenType: Bearer
+                expiresAt: "2026-11-07T18:30:00Z"
+                accountId: 3f2b8c1e-5d4a-4e7b-9a10-2c6d8e4f7a11
+                username: jonas_p
+                role: PLAYER
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Wrong username or password.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                errorCode: INVALID_CREDENTIALS
+                message: Wrong username or password. Check them and try again.
+        "403":
+          description: The account is disabled by an operator.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                errorCode: ACCOUNT_DISABLED
+                message: Your account is disabled. Contact the operator.
+        "429":
+          description: More than 5 failed logins in a minute from this IP address.
+          headers:
+            Retry-After:
+              description: Seconds until the next login attempt is accepted.
+              schema:
+                type: integer
+                minimum: 1
+                example: 42
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                errorCode: RATE_LIMITED
+                message: Too many failed attempts. Wait a minute and try again.
+                retryAfterSec: 42
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /balance:
+    get:
+      tags: [Account]
+      operationId: getBalance
+      summary: Get the credit balance (S4)
+      description: |
+        Returns the balance of the logged-in Host or Player. Credits that are held for a pending or
+        active request are reported separately and are not part of `available`.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Current balance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Balance"
+              example:
+                available: 120
+                held: 240
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountDisabled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /balance/top-up:
+    post:
+      tags: [Account]
+      operationId: topUpBalance
+      summary: Add test credits (prototype only)
+      description: |
+        Prototype helper so that a Player can get credits without real payments (W3: credits only
+        measure time in this version). Corresponds to `CreditService.topUp`. Only Players can use it.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TopUpRequest"
+            example:
+              amount: 100
+      responses:
+        "200":
+          description: Credits added. Returns the new balance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Balance"
+              example:
+                available: 220
+                held: 240
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The account is disabled, or it is not a Player account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                wrongRole:
+                  summary: Host account
+                  value:
+                    errorCode: WRONG_ROLE
+                    message: This action is not available for your account type.
+                accountDisabled:
+                  summary: Disabled account
+                  value:
+                    errorCode: ACCOUNT_DISABLED
+                    message: Your account is disabled. Contact the operator.
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /offerings:
+    get:
+      tags: [Offerings]
+      operationId: listOfferings
+      summary: List available offerings (M2, C5)
+      description: |
+        Returns only offerings in state `AVAILABLE`, so a reserved or running Host is never listed.
+        An offering disappears from the list within 10 s after its Host Agent loses the server
+        connection (M1, NFR-08). The Browser Client refreshes the list every 5 seconds. Only
+        Players can call this.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: game
+          in: query
+          required: false
+          description: Case-insensitive part of a game name. Only offerings that include a matching game are returned.
+          schema:
+            type: string
+            maxLength: 100
+            example: minecraft
+      responses:
+        "200":
+          description: The available offerings (possibly an empty list).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OfferingList"
+              example:
+                offerings:
+                  - offeringId: 9b1d5f2a-7c3e-4a68-8f01-5e2d9c4b6a70
+                    hostUsername: tadas_gpu
+                    hostRating: 4.7
+                    games:
+                      - gameId: 0c7e4a19-2b5d-4f83-9e6a-1d8b3c5f7a22
+                        name: Minecraft
+                    durationMin: 120
+                    pricePerMinute: 2
+                    specs:
+                      cpu: AMD Ryzen 7 5800X
+                      gpu: NVIDIA GeForce RTX 3070
+                      ramGb: 32
+                    connection:
+                      uploadMbps: 48.5
+                      latencyMs: 18
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The account is disabled, or it is not a Player account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                wrongRole:
+                  summary: Host account
+                  value:
+                    errorCode: WRONG_ROLE
+                    message: This action is not available for your account type.
+                accountDisabled:
+                  summary: Disabled account
+                  value:
+                    errorCode: ACCOUNT_DISABLED
+                    message: Your account is disabled. Contact the operator.
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /sessions:
+    get:
+      tags: [Sessions]
+      operationId: listSessions
+      summary: List my past sessions (C9)
+      description: |
+        Returns the ended sessions of the logged-in user, newest first. Users see only their own
+        sessions. Recordings (M13) are never shown.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Offset"
+      responses:
+        "200":
+          description: A page of the session history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionHistoryList"
+              example:
+                total: 1
+                items:
+                  - sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+                    role: PLAYER
+                    game: Minecraft
+                    otherUsername: tadas_gpu
+                    startedAt: "2026-11-06T18:30:08Z"
+                    endedAt: "2026-11-06T19:30:08Z"
+                    playedSeconds: 3600
+                    creditsDelta: -120
+                    endReason: host_disconnected
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountDisabled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /reports:
+    post:
+      tags: [Reports]
+      operationId: createReport
+      summary: Rate the other side and report a problem (C7)
+      description: |
+        After a session has ended, each side can give a 1-5 rating and an optional report. At least
+        one of `rating` and `reason` is required. A user can submit only once per session. A report
+        links to the session recording and keeps it past the 7-day auto-delete while the report is
+        open (M13). Operators review reports and can suspend accounts. A Host block after an early
+        Disconnect (S3) is separate and automatic.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReportRequest"
+            example:
+              sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+              rating: 2
+              reason: The Host ended the session early without any warning.
+      responses:
+        "201":
+          description: Rating and report stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportResponse"
+              example:
+                reportId: 2e9f1a47-6b3d-4c58-a0e2-7d4b8c1f3a65
+                reportOpen: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The account is disabled, or the user did not take part in this session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                notAParticipant:
+                  summary: Not a participant
+                  value:
+                    errorCode: NOT_A_PARTICIPANT
+                    message: You did not take part in this session.
+                accountDisabled:
+                  summary: Disabled account
+                  value:
+                    errorCode: ACCOUNT_DISABLED
+                    message: Your account is disabled. Contact the operator.
+        "404":
+          description: The session does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                errorCode: SESSION_NOT_FOUND
+                message: This session does not exist.
+        "409":
+          description: The session has not ended yet, or this user already submitted a report for it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                sessionNotEnded:
+                  summary: Session still running
+                  value:
+                    errorCode: SESSION_NOT_ENDED
+                    message: The session is still running. Report it after it ends.
+                alreadySubmitted:
+                  summary: Duplicate report
+                  value:
+                    errorCode: ALREADY_SUBMITTED
+                    message: You already rated this session.
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /ws:
+    get:
+      tags: [WebSocket]
+      operationId: connectWebSocket
+      summary: Open the WebSocket (signaling and session events)
+      description: |
+        Upgrades the HTTP request to a WebSocket (`wss://<signaling-server>/ws` in production,
+        `ws://localhost:8000/ws` in local development). Browser Client, Host Agent and Recording
+        Agent each keep one connection while they use the service. Swagger cannot execute
+        WebSocket calls, so use "Try it out" only to see the handshake; the messages are described
+        below and in the schemas (`HostToServerMessage`, `ServerToHostMessage`,
+        `BrowserToServerMessage`, `ServerToBrowserMessage`, `RecorderToServerMessage`,
+        `ServerToRecorderMessage`). |
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          description: Access token from `POST /auth/login` (or the operator's service token for the Recording Agent).
+          schema:
+            type: string
+      responses:
+        "101":
+          description: Switching Protocols. The WebSocket is open; the messages described above can be exchanged.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/AccountDisabled"
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: "Token from `POST /auth/login`. Send it as `Authorization: Bearer <token>`."
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum number of items to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Number of items to skip.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+  responses:
+    BadRequest:
+      description: The request body or a parameter does not match the schema.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            errorCode: MALFORMED_REQUEST
+            message: Something went wrong. Check the entered data and try again.
+    Unauthorized:
+      description: The token is missing, invalid or expired.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            errorCode: UNAUTHENTICATED
+            message: Your session has expired. Log in again.
+    AccountDisabled:
+      description: The account is disabled by an operator.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            errorCode: ACCOUNT_DISABLED
+            message: Your account is disabled. Contact the operator.
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            errorCode: INTERNAL_ERROR
+            message: The server had a problem. Try again in a moment.
+  schemas:
+    # ------------------------------------------------------------------
+    # Basic types
+    # ------------------------------------------------------------------
+    Uuid:
+      type: string
+      format: uuid
+      example: 3f2b8c1e-5d4a-4e7b-9a10-2c6d8e4f7a11
+    Timestamp:
+      type: string
+      format: date-time
+      example: "2026-11-06T18:30:00Z"
+    NullableUuid:
+      type: string
+      format: uuid
+      nullable: true
+      description: A UUID, or `null` when the message is sent before a session exists.
+    Role:
+      type: string
+      enum: [HOST, PLAYER]
+      description: Account type. One account has exactly one role (M8).
+    # ------------------------------------------------------------------
+    # Errors
+    # ------------------------------------------------------------------
+    ErrorCode:
+      type: string
+      description: |
+        Every error code of the service and the text the client shows (NFR-15: what went wrong and
+        what the user can do next; texts are drafts). REST returns the code in `ErrorResponse`, the
+        WebSocket returns it in the payload of `error`, `offering_error` or `join_error`.
+
+        | Code | Where | HTTP | Meaning | Text shown to the user |
+        |---|---|---|---|---|
+        | `MALFORMED_REQUEST` | all | 400 | Body, parameter or message does not match the schema | Something went wrong. Check the entered data and try again. |
+        | `UNAUTHENTICATED` | all | 401 | Token missing, invalid or expired | Your session has expired. Log in again. |
+        | `WRONG_ROLE` | all | 403 | The action is not allowed for this role (M8) | This action is not available for your account type. |
+        | `ACCOUNT_DISABLED` | all | 403 | The account was disabled by an operator | Your account is disabled. Contact the operator. |
+        | `RATE_LIMITED` | login | 429 | More than 5 failed logins per minute from this IP (NFR-11) | Too many failed attempts. Wait a minute and try again. |
+        | `INTERNAL_ERROR` | all | 500 | Unexpected server error | The server had a problem. Try again in a moment. |
+        | `INVALID_STATE` | WebSocket | - | The message is not allowed in the current state | Something went wrong. Reload the page and try again. |
+        | `INVALID_CREDENTIALS` | login | 401 | Wrong username or password | Wrong username or password. Check them and try again. |
+        | `USERNAME_TAKEN` | register | 409 | The username already exists | This username is already taken. Choose another one. |
+        | `OFFERING_ALREADY_ACTIVE` | `offering_error` | - | The Host already has an active offering or session (M1) | You are already offering your PC. Cancel the offering or finish the session first. |
+        | `HOST_BLOCKED` | `offering_error` | - | The Host is blocked after an early Disconnect (S3) | You cannot offer your PC until the block ends (see the time shown). |
+        | `INVALID_DURATION` | `offering_error` | - | Duration is outside 15 min to 4 h (M9) | Choose a duration between 15 minutes and 4 hours. |
+        | `INVALID_GAMES` | `offering_error` | - | The games list is empty, too long or has duplicates (M10) | Add at least one game to offer. |
+        | `OFFERING_NOT_FOUND` | `offering_error` | - | The offering does not exist or has ended | This offering has ended. Start a new one. |
+        | `OFFERING_NOT_CANCELLABLE` | `offering_error` | - | A Player already reserved the offering (M1) | A Player has requested your PC. Approve or reject the request first. |
+        | `ALREADY_HAS_REQUEST` | `join_error` | - | The Player already has a pending or active request (M2) | You already have a request in progress. Cancel it or leave the session first. |
+        | `OFFERING_UNAVAILABLE` | `join_error` | - | The offering is not AVAILABLE any more | This PC is no longer available. Pick another one from the list. |
+        | `GAME_NOT_OFFERED` | `join_error` | - | The game is not in the offering's games list | This Host does not offer this game. Pick another game or PC. |
+        | `INSUFFICIENT_CREDITS` | `join_error` | - | Credits do not cover price per minute x offered duration (S4) | You do not have enough credits for this session. Pick a cheaper PC or add credits. |
+        | `REQUEST_NOT_FOUND` | WebSocket | - | The join request does not exist, or it already ended | This request no longer exists. |
+        | `SESSION_NOT_FOUND` | WebSocket, reports | 404 | The session does not exist | This session does not exist. |
+        | `NOT_A_PARTICIPANT` | WebSocket, reports | 403 | The sender is not the Host or Player of the session | You did not take part in this session. |
+        | `SESSION_NOT_ENDED` | reports | 409 | A report was sent while the session is still running | The session is still running. Report it after it ends. |
+        | `ALREADY_SUBMITTED` | reports | 409 | The user already rated this session | You already rated this session. |
+      enum:
+        - MALFORMED_REQUEST
+        - UNAUTHENTICATED
+        - WRONG_ROLE
+        - ACCOUNT_DISABLED
+        - RATE_LIMITED
+        - INTERNAL_ERROR
+        - INVALID_STATE
+        - INVALID_CREDENTIALS
+        - USERNAME_TAKEN
+        - OFFERING_ALREADY_ACTIVE
+        - HOST_BLOCKED
+        - INVALID_DURATION
+        - INVALID_GAMES
+        - OFFERING_NOT_FOUND
+        - OFFERING_NOT_CANCELLABLE
+        - ALREADY_HAS_REQUEST
+        - OFFERING_UNAVAILABLE
+        - GAME_NOT_OFFERED
+        - INSUFFICIENT_CREDITS
+        - REQUEST_NOT_FOUND
+        - SESSION_NOT_FOUND
+        - NOT_A_PARTICIPANT
+        - SESSION_NOT_ENDED
+        - ALREADY_SUBMITTED
+    ErrorResponse:
+      type: object
+      description: Error body of every REST response with a status of 400 or higher.
+      required: [errorCode, message]
+      additionalProperties: false
+      properties:
+        errorCode:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          description: Text that can be shown to the user (see `ErrorCode`).
+        retryAfterSec:
+          type: integer
+          minimum: 1
+          description: Only for `RATE_LIMITED`. Same value as the `Retry-After` header.
+    ErrorPayload:
+      type: object
+      description: Payload of `error`, `offering_error` and `join_error`.
+      required: [errorCode, message]
+      additionalProperties: false
+      properties:
+        errorCode:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          description: Text that can be shown to the user (see `ErrorCode`).
+        blockedUntil:
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+          description: Only for `HOST_BLOCKED`. The Host sees the remaining block time (S3).
+        blockReason:
+          type: string
+          description: Only for `HOST_BLOCKED`. Why the Host is blocked.
+    # ------------------------------------------------------------------
+    # REST schemas
+    # ------------------------------------------------------------------
+    RegisterRequest:
+      type: object
+      required: [username, password, role]
+      additionalProperties: false
+      properties:
+        username:
+          type: string
+          pattern: "^[A-Za-z0-9_]{3,32}$"
+          description: Unique username, 3 to 32 letters, digits or underscores.
+          example: jonas_p
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          description: Stored only as a salted hash (NFR-11).
+          example: correct-horse-battery
+        role:
+          $ref: "#/components/schemas/Role"
+    AccountResponse:
+      type: object
+      required: [accountId, username, role]
+      properties:
+        accountId:
+          $ref: "#/components/schemas/Uuid"
+        username:
+          type: string
+          example: jonas_p
+        role:
+          $ref: "#/components/schemas/Role"
+    LoginRequest:
+      type: object
+      required: [username, password]
+      additionalProperties: false
+      properties:
+        username:
+          type: string
+          maxLength: 32
+          example: jonas_p
+        password:
+          type: string
+          format: password
+          maxLength: 128
+          example: correct-horse-battery
+    LoginResponse:
+      type: object
+      required: [token, tokenType, expiresAt, accountId, username, role]
+      properties:
+        token:
+          type: string
+          description: Access token. Use it as Bearer token for REST and as the `token` parameter of `GET /ws`.
+        tokenType:
+          type: string
+          enum: [Bearer]
+        expiresAt:
+          $ref: "#/components/schemas/Timestamp"
+        accountId:
+          $ref: "#/components/schemas/Uuid"
+        username:
+          type: string
+          example: jonas_p
+        role:
+          $ref: "#/components/schemas/Role"
+    Balance:
+      type: object
+      required: [available, held]
+      properties:
+        available:
+          type: integer
+          minimum: 0
+          description: Credits that can be spent now. Never below zero (S4).
+          example: 120
+        held:
+          type: integer
+          minimum: 0
+          description: Credits held for a pending or active request.
+          example: 60
+    TopUpRequest:
+      type: object
+      required: [amount]
+      additionalProperties: false
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          description: Credits to add.
+          example: 100
+    GameEntry:
+      type: object
+      description: A game that the Host offers. The file path stays on the Host's PC and is never sent (M10).
+      required: [gameId, name]
+      additionalProperties: false
+      properties:
+        gameId:
+          $ref: "#/components/schemas/Uuid"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Minecraft
+    HostSpecs:
+      type: object
+      description: PC specifications read by the Host Agent. The Host cannot edit them by hand (C5).
+      required: [cpu, gpu, ramGb]
+      additionalProperties: false
+      properties:
+        cpu:
+          type: string
+          maxLength: 100
+          example: AMD Ryzen 7 5800X
+        gpu:
+          type: string
+          maxLength: 100
+          example: NVIDIA GeForce RTX 3070
+        ramGb:
+          type: integer
+          minimum: 1
+          example: 32
+    ConnectionQuality:
+      type: object
+      description: Result of the Host Agent self-test (S5), shown on the Host listing (C5).
+      required: [uploadMbps, latencyMs]
+      additionalProperties: false
+      properties:
+        uploadMbps:
+          type: number
+          minimum: 4
+          description: Measured upload speed. At least 4 Mbps is needed for the 720p stream (S5).
+          example: 48.5
+        latencyMs:
+          type: integer
+          minimum: 0
+          description: Measured round-trip time to the server.
+          example: 18
+    OfferingView:
+      type: object
+      description: One available PC as shown to a Player (M2, C5).
+      required:
+        [
+          offeringId,
+          hostUsername,
+          games,
+          durationMin,
+          pricePerMinute,
+          specs,
+          connection,
+        ]
+      properties:
+        offeringId:
+          $ref: "#/components/schemas/Uuid"
+        hostUsername:
+          type: string
+          example: tadas_gpu
+        hostRating:
+          type: number
+          nullable: true
+          minimum: 1
+          maximum: 5
+          description: Average rating of the Host (C7). `null` until the Host has been rated.
+          example: 4.7
+        games:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/GameEntry"
+        durationMin:
+          type: integer
+          minimum: 15
+          maximum: 240
+          description: Length of the session the Player gets, in minutes. Counted from the first video frame (M9).
+          example: 120
+        pricePerMinute:
+          type: integer
+          minimum: 1
+          description: Credits per full minute played (S4).
+          example: 2
+        specs:
+          $ref: "#/components/schemas/HostSpecs"
+        connection:
+          $ref: "#/components/schemas/ConnectionQuality"
+    OfferingList:
+      type: object
+      required: [offerings]
+      properties:
+        offerings:
+          type: array
+          items:
+            $ref: "#/components/schemas/OfferingView"
+    EndReason:
+      type: string
+      description: |
+        Why a session ended. Whatever the reason, the same end procedure runs (stop input, release
+        all held keys, stop capture, close the game, settle credits).
+
+        | Value | Trigger | Host blocked | Player pays | Text shown |
+        |---|---|---|---|---|
+        | `host_disconnected` | Host presses Disconnect | yes, if booked time remained (S3) | time played | The Host ended the session. |
+        | `player_left` | Leave button or page closed | no | time played | You left the session. (Host sees: The Player left the session.) |
+        | `connection_lost` | no heartbeat for 5 s and not back within 20 s (S6) | no | time played | Connection lost. The session has ended. |
+        | `duration_elapsed` | booked time is over | no | full duration | The booked time is over. Thanks for playing! |
+        | `setup_failed` | no first frame within 10 s of approval (M4) | no | nothing | The connection could not be set up. You were not charged. Try again. |
+      enum:
+        - host_disconnected
+        - player_left
+        - connection_lost
+        - duration_elapsed
+        - setup_failed
+    SessionHistoryItem:
+      type: object
+      description: One ended session of the logged-in user (C9).
+      required:
+        [
+          sessionId,
+          role,
+          game,
+          otherUsername,
+          endedAt,
+          playedSeconds,
+          creditsDelta,
+          endReason,
+        ]
+      properties:
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        role:
+          allOf:
+            - $ref: "#/components/schemas/Role"
+          description: The role the user had in this session.
+        game:
+          type: string
+          example: Minecraft
+        otherUsername:
+          type: string
+          example: tadas_gpu
+        startedAt:
+          allOf:
+            - $ref: "#/components/schemas/Timestamp"
+          description: Time of the first video frame. Missing if the session never became ACTIVE.
+        endedAt:
+          $ref: "#/components/schemas/Timestamp"
+        playedSeconds:
+          type: integer
+          minimum: 0
+          description: Time from the first frame to the end. 0 if the session never became ACTIVE.
+          example: 3600
+        creditsDelta:
+          type: integer
+          description: Credits earned (positive, Host) or spent (negative, Player). 0 if nothing was charged (S4).
+          example: -120
+        endReason:
+          $ref: "#/components/schemas/EndReason"
+    SessionHistoryList:
+      type: object
+      required: [total, items]
+      properties:
+        total:
+          type: integer
+          minimum: 0
+          description: Number of sessions of the user (all pages).
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionHistoryItem"
+    ReportRequest:
+      type: object
+      required: [sessionId]
+      additionalProperties: false
+      anyOf:
+        - required: [rating]
+        - required: [reason]
+      properties:
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: Rating of the other side, 1 (bad) to 5 (good).
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Description of the problem. Creates a report that operators review.
+    ReportResponse:
+      type: object
+      required: [reportId, reportOpen]
+      properties:
+        reportId:
+          $ref: "#/components/schemas/Uuid"
+        reportOpen:
+          type: boolean
+          description: True if a problem was reported. The recording is kept while the report is open (M13).
+    IceServer:
+      type: object
+      description: One STUN or TURN server (S2). TURN credentials are short-lived and valid only for this session.
+      required: [urls]
+      additionalProperties: false
+      properties:
+        urls:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          example: ["turn:turn.litascloud.example.com:3478?transport=udp"]
+        username:
+          type: string
+          description: Only for TURN.
+        credential:
+          type: string
+          description: Only for TURN.
+    JoinRejectedReason:
+      type: string
+      description: |
+        Why a join request ended without a session.
+
+        | Value | Meaning | Text shown to the Player |
+        |---|---|---|
+        | `REJECTED` | The Host declined (M3) | The Host declined your request. |
+        | `APPROVAL_TIMEOUT` | The Host did not answer within 30 s (M3) | The Host did not respond in time. Try again or choose another PC. |
+        | `HOST_UNAVAILABLE` | The Host Agent lost the server connection while the request was pending (M1) | The Host is no longer online. Choose another PC. |
+      enum: [REJECTED, APPROVAL_TIMEOUT, HOST_UNAVAILABLE]
+    PeerKind:
+      type: string
+      enum: [player, recorder]
+      default: player
+      description: |
+        Which peer an SDP or ICE message is about. The Host Agent has one peer connection with the
+        Player (`player`) and, in a recorded session, a second one with the Recording Agent
+        (`recorder`, M13). If missing, `player` is assumed.
+    RegisterOfferingMessage:
+      type: object
+      description: Host Agent to server. Starts an offering (M1). Allowed for a Host without an active block and without another active offering or session.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [register_offering]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [games, durationMin, specs, connection]
+          additionalProperties: false
+          properties:
+            games:
+              type: array
+              minItems: 1
+              maxItems: 50
+              items:
+                $ref: "#/components/schemas/GameEntry"
+            durationMin:
+              type: integer
+              minimum: 15
+              maximum: 240
+              description: How long the PC is lent for one session, in minutes (M9).
+            specs:
+              $ref: "#/components/schemas/HostSpecs"
+            connection:
+              $ref: "#/components/schemas/ConnectionQuality"
+      example:
+        type: register_offering
+        sessionId: null
+        payload:
+          games:
+            - gameId: 0c7e4a19-2b5d-4f83-9e6a-1d8b3c5f7a22
+              name: Minecraft
+          durationMin: 120
+          specs:
+            cpu: AMD Ryzen 7 5800X
+            gpu: NVIDIA GeForce RTX 3070
+            ramGb: 32
+          connection:
+            uploadMbps: 48.5
+            latencyMs: 18
+    OfferingRegisteredMessage:
+      type: object
+      description: Server to Host Agent. The offering is AVAILABLE and visible in the Player list.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [offering_registered]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [offeringId, pricePerMinute]
+          additionalProperties: false
+          properties:
+            offeringId:
+              $ref: "#/components/schemas/Uuid"
+            pricePerMinute:
+              type: integer
+              minimum: 1
+              description: Credits per full minute played, set by the server (S4).
+      example:
+        type: offering_registered
+        sessionId: null
+        payload:
+          offeringId: 9b1d5f2a-7c3e-4a68-8f01-5e2d9c4b6a70
+          pricePerMinute: 2
+    OfferingErrorMessage:
+      type: object
+      description: Server to Host Agent. Registering or cancelling an offering was refused. Possible codes are OFFERING_ALREADY_ACTIVE, HOST_BLOCKED, INVALID_DURATION, INVALID_GAMES, OFFERING_NOT_FOUND, OFFERING_NOT_CANCELLABLE, WRONG_ROLE and ACCOUNT_DISABLED.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [offering_error]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          $ref: "#/components/schemas/ErrorPayload"
+      example:
+        type: offering_error
+        sessionId: null
+        payload:
+          errorCode: HOST_BLOCKED
+          message: You cannot offer your PC until the block ends (see the time shown).
+          blockedUntil: "2026-11-06T20:30:08Z"
+          blockReason: You ended a session before the booked time was over.
+    HeartbeatMessage:
+      type: object
+      description: Host Agent to server, every 3 seconds while the offering is AVAILABLE or RESERVED. There is no reply. After 10 seconds without one the offering becomes ENDED (M1, NFR-08).
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [heartbeat]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [offeringId]
+          additionalProperties: false
+          properties:
+            offeringId:
+              $ref: "#/components/schemas/Uuid"
+      example:
+        type: heartbeat
+        sessionId: null
+        payload:
+          offeringId: 9b1d5f2a-7c3e-4a68-8f01-5e2d9c4b6a70
+    CancelOfferingMessage:
+      type: object
+      description: Host Agent to server. Cancels an AVAILABLE offering (M1). Refused with OFFERING_NOT_CANCELLABLE once a Player has reserved it.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [cancel_offering]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [offeringId]
+          additionalProperties: false
+          properties:
+            offeringId:
+              $ref: "#/components/schemas/Uuid"
+      example:
+        type: cancel_offering
+        sessionId: null
+        payload:
+          offeringId: 9b1d5f2a-7c3e-4a68-8f01-5e2d9c4b6a70
+    OfferingEndedMessage:
+      type: object
+      description: Server to Host Agent. The offering is ENDED. The Host can start a new offering unless blocked (S3).
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [offering_ended]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [offeringId, reason]
+          additionalProperties: false
+          properties:
+            offeringId:
+              $ref: "#/components/schemas/Uuid"
+            reason:
+              type: string
+              enum: [host_cancelled, heartbeat_timeout, session_ended]
+              description: The Host cancelled it, no heartbeat arrived for 10 s, or the session that used the offering ended.
+      example:
+        type: offering_ended
+        sessionId: null
+        payload:
+          offeringId: 9b1d5f2a-7c3e-4a68-8f01-5e2d9c4b6a70
+          reason: host_cancelled
+    ConnectionRequestMessage:
+      type: object
+      description: Server to Host Agent. A Player wants to use the PC. The Host has 30 seconds to answer with `approve` or `reject` (M3). No video is sent and no input is accepted before approval.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [connection_request]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [requestId, playerUsername, gameId, gameName, expiresAt]
+          additionalProperties: false
+          properties:
+            requestId:
+              $ref: "#/components/schemas/Uuid"
+            playerUsername:
+              type: string
+            playerRating:
+              type: number
+              nullable: true
+              minimum: 1
+              maximum: 5
+              description: Average rating of the Player (C7). `null` until the Player has been rated.
+            gameId:
+              $ref: "#/components/schemas/Uuid"
+            gameName:
+              type: string
+            expiresAt:
+              allOf:
+                - $ref: "#/components/schemas/Timestamp"
+              description: When the 30 s timer fires. After that the request counts as rejected.
+      example:
+        type: connection_request
+        sessionId: null
+        payload:
+          requestId: 5d8a2c4e-1b7f-4e39-a6c0-9f3e5b7d2a14
+          playerUsername: jonas_p
+          playerRating: 4.2
+          gameId: 0c7e4a19-2b5d-4f83-9e6a-1d8b3c5f7a22
+          gameName: Minecraft
+          expiresAt: "2026-11-06T18:30:30Z"
+    ApproveMessage:
+      type: object
+      description: Host Agent to server. The Host approves the request (M3). The offering becomes IN_SESSION and a session is created in state CONNECTING. Answered with `error` (REQUEST_NOT_FOUND) if the request already ended.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [approve]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [requestId]
+          additionalProperties: false
+          properties:
+            requestId:
+              $ref: "#/components/schemas/Uuid"
+      example:
+        type: approve
+        sessionId: null
+        payload:
+          requestId: 5d8a2c4e-1b7f-4e39-a6c0-9f3e5b7d2a14
+    RejectMessage:
+      type: object
+      description: Host Agent to server. The Host rejects the request (M3). The hold is released and the offering returns to AVAILABLE without a new start.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [reject]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [requestId]
+          additionalProperties: false
+          properties:
+            requestId:
+              $ref: "#/components/schemas/Uuid"
+      example:
+        type: reject
+        sessionId: null
+        payload:
+          requestId: 5d8a2c4e-1b7f-4e39-a6c0-9f3e5b7d2a14
+    RequestClosedMessage:
+      type: object
+      description: Server to Host Agent. The approval dialog must close because the Player cancelled (S1) or the 30 s timer fired (M3). The offering is AVAILABLE again.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [request_closed]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [requestId, reason]
+          additionalProperties: false
+          properties:
+            requestId:
+              $ref: "#/components/schemas/Uuid"
+            reason:
+              type: string
+              enum: [cancelled, timed_out]
+      example:
+        type: request_closed
+        sessionId: null
+        payload:
+          requestId: 5d8a2c4e-1b7f-4e39-a6c0-9f3e5b7d2a14
+          reason: timed_out
+    JoinRequestMessage:
+      type: object
+      description: Browser to server. The Player presses Play (M2). The server checks the request, then reserves the Host and holds the credits (price per minute x offered duration) in one atomic step (NFR-09, S4).
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [join_request]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [offeringId, gameId]
+          additionalProperties: false
+          properties:
+            offeringId:
+              $ref: "#/components/schemas/Uuid"
+            gameId:
+              $ref: "#/components/schemas/Uuid"
+      example:
+        type: join_request
+        sessionId: null
+        payload:
+          offeringId: 9b1d5f2a-7c3e-4a68-8f01-5e2d9c4b6a70
+          gameId: 0c7e4a19-2b5d-4f83-9e6a-1d8b3c5f7a22
+    JoinErrorMessage:
+      type: object
+      description: Server to Browser. The join request was refused and nothing was reserved. Possible codes are ALREADY_HAS_REQUEST, OFFERING_UNAVAILABLE, GAME_NOT_OFFERED, INSUFFICIENT_CREDITS, WRONG_ROLE and ACCOUNT_DISABLED. Because the reservation is atomic, two Players can never reserve the same Host.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [join_error]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          $ref: "#/components/schemas/ErrorPayload"
+      example:
+        type: join_error
+        sessionId: null
+        payload:
+          errorCode: INSUFFICIENT_CREDITS
+          message: You do not have enough credits for this session. Pick a cheaper PC or add credits.
+    JoinPendingMessage:
+      type: object
+      description: Server to Browser. The request is PENDING and the Host was asked. The Browser shows the waiting screen with a Cancel button (S1).
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [join_pending]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [requestId]
+          additionalProperties: false
+          properties:
+            requestId:
+              $ref: "#/components/schemas/Uuid"
+      example:
+        type: join_pending
+        sessionId: null
+        payload:
+          requestId: 5d8a2c4e-1b7f-4e39-a6c0-9f3e5b7d2a14
+    JoinApprovedMessage:
+      type: object
+      description: Server to Browser. The Host approved. The session exists in state CONNECTING and `sessionId` is set. `ice_servers` follows (Flow 3).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [join_approved]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [requestId]
+          additionalProperties: false
+          properties:
+            requestId:
+              $ref: "#/components/schemas/Uuid"
+      example:
+        type: join_approved
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          requestId: 5d8a2c4e-1b7f-4e39-a6c0-9f3e5b7d2a14
+    JoinRejectedMessage:
+      type: object
+      description: Server to Browser. The request ended without a session. The hold is released and the Player can send a new request (M3).
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [join_rejected]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [requestId, reason]
+          additionalProperties: false
+          properties:
+            requestId:
+              $ref: "#/components/schemas/Uuid"
+            reason:
+              $ref: "#/components/schemas/JoinRejectedReason"
+      example:
+        type: join_rejected
+        sessionId: null
+        payload:
+          requestId: 5d8a2c4e-1b7f-4e39-a6c0-9f3e5b7d2a14
+          reason: REJECTED
+    CancelRequestMessage:
+      type: object
+      description: Browser to server. The Player cancels while waiting (S1). The request becomes CANCELLED, the hold and the Host reservation are released within 2 s and the Host's dialog closes.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [cancel_request]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [requestId]
+          additionalProperties: false
+          properties:
+            requestId:
+              $ref: "#/components/schemas/Uuid"
+      example:
+        type: cancel_request
+        sessionId: null
+        payload:
+          requestId: 5d8a2c4e-1b7f-4e39-a6c0-9f3e5b7d2a14
+    RequestCancelledMessage:
+      type: object
+      description: Server to Browser. Confirms the cancellation. The Browser returns to the offering list.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [request_cancelled]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          type: object
+          required: [requestId]
+          additionalProperties: false
+          properties:
+            requestId:
+              $ref: "#/components/schemas/Uuid"
+      example:
+        type: request_cancelled
+        sessionId: null
+        payload:
+          requestId: 5d8a2c4e-1b7f-4e39-a6c0-9f3e5b7d2a14
+    IceServersMessage:
+      type: object
+      description: Server to Host Agent and Browser, after approval. The Host Agent launches `gameId` on a hidden desktop and starts capturing only the game window (M11). Then the peers exchange SDP and ICE through the server.
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [ice_servers]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [gameId, iceServers]
+          additionalProperties: false
+          properties:
+            gameId:
+              $ref: "#/components/schemas/Uuid"
+            iceServers:
+              type: array
+              minItems: 1
+              items:
+                $ref: "#/components/schemas/IceServer"
+      example:
+        type: ice_servers
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          gameId: 0c7e4a19-2b5d-4f83-9e6a-1d8b3c5f7a22
+          iceServers:
+            - urls: ["stun:stun.litascloud.example.com:3478"]
+            - urls: ["turn:turn.litascloud.example.com:3478?transport=udp"]
+              username: "1730919000:6a4c8e10"
+              credential: c2VjcmV0LWV4YW1wbGU=
+    SdpOfferMessage:
+      type: object
+      description: Host Agent to Browser (or to the Recording Agent when `peer` is `recorder`), relayed by the server. The server forwards it only to the other participant of the same session (M12).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [sdp_offer]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [sdp]
+          additionalProperties: false
+          properties:
+            sdp:
+              type: string
+              description: Session description from the WebRTC implementation.
+            peer:
+              $ref: "#/components/schemas/PeerKind"
+      example:
+        type: sdp_offer
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          sdp: 'v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n...'
+          peer: player
+    SdpAnswerMessage:
+      type: object
+      description: Browser (or the Recording Agent when `peer` is `recorder`) to Host Agent, relayed by the server.
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [sdp_answer]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [sdp]
+          additionalProperties: false
+          properties:
+            sdp:
+              type: string
+              description: Session description from the WebRTC implementation.
+            peer:
+              $ref: "#/components/schemas/PeerKind"
+      example:
+        type: sdp_answer
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          sdp: 'v=0\r\no=- 8372615400910023345 2 IN IP4 127.0.0.1\r\n...'
+          peer: player
+    IceCandidateMessage:
+      type: object
+      description: ICE candidate, sent in both directions between the Host Agent and the Browser (or the Recording Agent) and relayed by the server. If no direct path works, both peers use the TURN relay (S2).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [ice_candidate]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [candidate]
+          additionalProperties: false
+          properties:
+            candidate:
+              type: string
+              description: Candidate line from the WebRTC implementation.
+            sdpMid:
+              type: string
+              nullable: true
+            sdpMLineIndex:
+              type: integer
+              nullable: true
+              minimum: 0
+            peer:
+              $ref: "#/components/schemas/PeerKind"
+      example:
+        type: ice_candidate
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          candidate: candidate:842163049 1 udp 1677729535 203.0.113.7 51472 typ srflx
+          sdpMid: "0"
+          sdpMLineIndex: 0
+          peer: player
+    FirstFrameMessage:
+      type: object
+      description: Browser to server. The first video frame is shown. The session becomes ACTIVE and the booked time and billing start counting (M9, S4). If no frame arrives within 10 s of approval, the server ends the session with `setup_failed` (M4, NFR-05).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [first_frame]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          additionalProperties: false
+      example:
+        type: first_frame
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload: {}
+    SessionActiveMessage:
+      type: object
+      description: Server to Host Agent and Browser. The session is ACTIVE. Both sides show the remaining time until `endsAt` (M9).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [session_active]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [startedAt, endsAt]
+          additionalProperties: false
+          properties:
+            startedAt:
+              allOf:
+                - $ref: "#/components/schemas/Timestamp"
+              description: Time of the first video frame.
+            endsAt:
+              allOf:
+                - $ref: "#/components/schemas/Timestamp"
+              description: startedAt plus the booked duration.
+      example:
+        type: session_active
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          startedAt: "2026-11-06T18:30:08Z"
+          endsAt: "2026-11-06T20:30:08Z"
+    TimeWarningMessage:
+      type: object
+      description: Server to Host Agent and Browser, 60 seconds before the booked time ends (M9). At the end the session closes without a penalty.
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [time_warning]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [secondsLeft]
+          additionalProperties: false
+          properties:
+            secondsLeft:
+              type: integer
+              minimum: 1
+              example: 60
+      example:
+        type: time_warning
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          secondsLeft: 60
+    SessionEndMessage:
+      type: object
+      description: |
+        Host Agent or Browser to server. The sender ends the session. Allowed reasons by sender:
+        Host Agent `host_disconnected` or `connection_lost`; Browser `player_left` or
+        `connection_lost`. Other reasons are set by the server (`duration_elapsed`, `setup_failed`)
+        and a different reason is answered with `error` (MALFORMED_REQUEST).
+
+        On Disconnect the Host Agent first shows the block warning (S3) and, after confirmation,
+        stops stream and input locally within 2 seconds without waiting for the server (M6,
+        NFR-06). A Player leaving or a lost connection never blocks the Host.
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [session_end]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [reason]
+          additionalProperties: false
+          properties:
+            reason:
+              type: string
+              enum: [host_disconnected, player_left, connection_lost]
+      example:
+        type: session_end
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          reason: host_disconnected
+    SessionEndedMessage:
+      type: object
+      description: Server to Host Agent and Browser. The session is ENDED and the end reason is stored. Each side stops input, releases all held keys, stops capture, closes the game and shows the ended screen with the reason (M6). The Host can start a new offering afterwards, unless blocked (S3).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [session_ended]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [reason, endedAt]
+          additionalProperties: false
+          properties:
+            reason:
+              $ref: "#/components/schemas/EndReason"
+            endedAt:
+              $ref: "#/components/schemas/Timestamp"
+            hostBlockedUntil:
+              allOf:
+                - $ref: "#/components/schemas/Timestamp"
+              description: Only sent to the Host, and only when the reason is `host_disconnected` and booked time remained. End of the block (S3).
+      example:
+        type: session_ended
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          reason: host_disconnected
+          endedAt: "2026-11-06T19:30:08Z"
+          hostBlockedUntil: "2026-11-06T20:30:08Z"
+    CreditsSettledMessage:
+      type: object
+      description: |
+        Server to Host Agent and Browser, after the end procedure. Releasing the hold, debiting the
+        Player, paying the Host, booking the fee and marking the session settled happen in one
+        database transaction, so a session is never settled twice (S4, NFR-09).
+
+        Billable minutes are the time from the first frame to the end, rounded up. Cost is
+        billable minutes x price per minute, never more than the held amount. Fee is 5 % of the
+        cost, rounded down. The invariant `hostPayout + platformFee = cost` always holds (G6). If the
+        session never became ACTIVE, nothing is charged (all amounts are 0).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [credits_settled]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [billableMinutes, cost, platformFee, hostPayout, balance]
+          additionalProperties: false
+          properties:
+            billableMinutes:
+              type: integer
+              minimum: 0
+            cost:
+              type: integer
+              minimum: 0
+              description: Credits the Player pays.
+            platformFee:
+              type: integer
+              minimum: 0
+            hostPayout:
+              type: integer
+              minimum: 0
+              description: Credits the Host earns (cost minus fee).
+            balance:
+              type: integer
+              minimum: 0
+              description: The receiver's new available balance.
+      example:
+        type: credits_settled
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          billableMinutes: 60
+          cost: 120
+          platformFee: 6
+          hostPayout: 114
+          balance: 100
+    RecordStartMessage:
+      type: object
+      description: Server to Recording Agent, after the session became ACTIVE. The recorder joins as an extra peer over its own connection and receives a video-only copy, so a failure there never degrades the Player's stream (M13, NFR-10).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [record_start]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [hostUsername, playerUsername, startedAt, iceServers]
+          additionalProperties: false
+          properties:
+            hostUsername:
+              type: string
+            playerUsername:
+              type: string
+            startedAt:
+              $ref: "#/components/schemas/Timestamp"
+            iceServers:
+              type: array
+              minItems: 1
+              items:
+                $ref: "#/components/schemas/IceServer"
+      example:
+        type: record_start
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          hostUsername: tadas_gpu
+          playerUsername: jonas_p
+          startedAt: "2026-11-06T18:30:08Z"
+          iceServers:
+            - urls: ["stun:stun.litascloud.example.com:3478"]
+    RecordReadyMessage:
+      type: object
+      description: Recording Agent to server. The recorder is ready to receive. The server then sends `recorder_ready` to the Host Agent.
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [record_ready]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          additionalProperties: false
+      example:
+        type: record_ready
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload: {}
+    RecorderReadyMessage:
+      type: object
+      description: Server to Host Agent. The Recording Agent is ready. The Host Agent starts a second peer connection with an `sdp_offer` that has `peer` set to `recorder` and sends a copy of the video track (video only).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [recorder_ready]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          additionalProperties: false
+      example:
+        type: recorder_ready
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload: {}
+    RecordingStatusMessage:
+      type: object
+      description: Recording Agent to server. If recording fails, the session continues and the server flags it (M13, NFR-10). The file is saved with sessionId, Host, Player and start and end time, readable only by operators, and deleted after 7 days unless a report is open.
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [recording_status]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          required: [status]
+          additionalProperties: false
+          properties:
+            status:
+              type: string
+              enum: [RECORDING, FINALIZED, FAILED]
+            detail:
+              type: string
+              description: Short technical reason, mainly for `FAILED`. Never shown to users.
+      example:
+        type: recording_status
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload:
+          status: RECORDING
+    RecordStopMessage:
+      type: object
+      description: Server to Recording Agent, when the session ended. The recorder finalizes the file, which gets a deletion date 7 days later (M13).
+      required: [type, sessionId, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [record_stop]
+        sessionId:
+          $ref: "#/components/schemas/Uuid"
+        payload:
+          type: object
+          additionalProperties: false
+      example:
+        type: record_stop
+        sessionId: 6a4c8e10-3f2b-4d97-b5a1-8c0e2f4d6b93
+        payload: {}
+    ErrorMessage:
+      type: object
+      description: Server to any client. Generic refusal for messages that have no specific error message. Possible codes are MALFORMED_REQUEST, UNAUTHENTICATED, WRONG_ROLE, INVALID_STATE, REQUEST_NOT_FOUND, SESSION_NOT_FOUND and NOT_A_PARTICIPANT.
+      required: [type, payload]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [error]
+        sessionId:
+          $ref: "#/components/schemas/NullableUuid"
+        payload:
+          $ref: "#/components/schemas/ErrorPayload"
+      example:
+        type: error
+        sessionId: null
+        payload:
+          errorCode: MALFORMED_REQUEST
+          message: Something went wrong. Check the entered data and try again.
+    HostToServerMessage:
+      description: All messages that the Host Agent sends to the server.
+      oneOf:
+        - $ref: "#/components/schemas/RegisterOfferingMessage"
+        - $ref: "#/components/schemas/HeartbeatMessage"
+        - $ref: "#/components/schemas/CancelOfferingMessage"
+        - $ref: "#/components/schemas/ApproveMessage"
+        - $ref: "#/components/schemas/RejectMessage"
+        - $ref: "#/components/schemas/SdpOfferMessage"
+        - $ref: "#/components/schemas/IceCandidateMessage"
+        - $ref: "#/components/schemas/SessionEndMessage"
+      discriminator:
+        propertyName: type
+        mapping:
+          register_offering: "#/components/schemas/RegisterOfferingMessage"
+          heartbeat: "#/components/schemas/HeartbeatMessage"
+          cancel_offering: "#/components/schemas/CancelOfferingMessage"
+          approve: "#/components/schemas/ApproveMessage"
+          reject: "#/components/schemas/RejectMessage"
+          sdp_offer: "#/components/schemas/SdpOfferMessage"
+          ice_candidate: "#/components/schemas/IceCandidateMessage"
+          session_end: "#/components/schemas/SessionEndMessage"
+    ServerToHostMessage:
+      description: All messages that the server sends to the Host Agent.
+      oneOf:
+        - $ref: "#/components/schemas/OfferingRegisteredMessage"
+        - $ref: "#/components/schemas/OfferingErrorMessage"
+        - $ref: "#/components/schemas/OfferingEndedMessage"
+        - $ref: "#/components/schemas/ConnectionRequestMessage"
+        - $ref: "#/components/schemas/RequestClosedMessage"
+        - $ref: "#/components/schemas/IceServersMessage"
+        - $ref: "#/components/schemas/SdpAnswerMessage"
+        - $ref: "#/components/schemas/IceCandidateMessage"
+        - $ref: "#/components/schemas/SessionActiveMessage"
+        - $ref: "#/components/schemas/TimeWarningMessage"
+        - $ref: "#/components/schemas/RecorderReadyMessage"
+        - $ref: "#/components/schemas/SessionEndedMessage"
+        - $ref: "#/components/schemas/CreditsSettledMessage"
+        - $ref: "#/components/schemas/ErrorMessage"
+      discriminator:
+        propertyName: type
+        mapping:
+          offering_registered: "#/components/schemas/OfferingRegisteredMessage"
+          offering_error: "#/components/schemas/OfferingErrorMessage"
+          offering_ended: "#/components/schemas/OfferingEndedMessage"
+          connection_request: "#/components/schemas/ConnectionRequestMessage"
+          request_closed: "#/components/schemas/RequestClosedMessage"
+          ice_servers: "#/components/schemas/IceServersMessage"
+          sdp_answer: "#/components/schemas/SdpAnswerMessage"
+          ice_candidate: "#/components/schemas/IceCandidateMessage"
+          session_active: "#/components/schemas/SessionActiveMessage"
+          time_warning: "#/components/schemas/TimeWarningMessage"
+          recorder_ready: "#/components/schemas/RecorderReadyMessage"
+          session_ended: "#/components/schemas/SessionEndedMessage"
+          credits_settled: "#/components/schemas/CreditsSettledMessage"
+          error: "#/components/schemas/ErrorMessage"
+    BrowserToServerMessage:
+      description: All messages that the Browser Client sends to the server.
+      oneOf:
+        - $ref: "#/components/schemas/JoinRequestMessage"
+        - $ref: "#/components/schemas/CancelRequestMessage"
+        - $ref: "#/components/schemas/SdpAnswerMessage"
+        - $ref: "#/components/schemas/IceCandidateMessage"
+        - $ref: "#/components/schemas/FirstFrameMessage"
+        - $ref: "#/components/schemas/SessionEndMessage"
+      discriminator:
+        propertyName: type
+        mapping:
+          join_request: "#/components/schemas/JoinRequestMessage"
+          cancel_request: "#/components/schemas/CancelRequestMessage"
+          sdp_answer: "#/components/schemas/SdpAnswerMessage"
+          ice_candidate: "#/components/schemas/IceCandidateMessage"
+          first_frame: "#/components/schemas/FirstFrameMessage"
+          session_end: "#/components/schemas/SessionEndMessage"
+    ServerToBrowserMessage:
+      description: All messages that the server sends to the Browser Client.
+      oneOf:
+        - $ref: "#/components/schemas/JoinPendingMessage"
+        - $ref: "#/components/schemas/JoinErrorMessage"
+        - $ref: "#/components/schemas/JoinApprovedMessage"
+        - $ref: "#/components/schemas/JoinRejectedMessage"
+        - $ref: "#/components/schemas/RequestCancelledMessage"
+        - $ref: "#/components/schemas/IceServersMessage"
+        - $ref: "#/components/schemas/SdpOfferMessage"
+        - $ref: "#/components/schemas/IceCandidateMessage"
+        - $ref: "#/components/schemas/SessionActiveMessage"
+        - $ref: "#/components/schemas/TimeWarningMessage"
+        - $ref: "#/components/schemas/SessionEndedMessage"
+        - $ref: "#/components/schemas/CreditsSettledMessage"
+        - $ref: "#/components/schemas/ErrorMessage"
+      discriminator:
+        propertyName: type
+        mapping:
+          join_pending: "#/components/schemas/JoinPendingMessage"
+          join_error: "#/components/schemas/JoinErrorMessage"
+          join_approved: "#/components/schemas/JoinApprovedMessage"
+          join_rejected: "#/components/schemas/JoinRejectedMessage"
+          request_cancelled: "#/components/schemas/RequestCancelledMessage"
+          ice_servers: "#/components/schemas/IceServersMessage"
+          sdp_offer: "#/components/schemas/SdpOfferMessage"
+          ice_candidate: "#/components/schemas/IceCandidateMessage"
+          session_active: "#/components/schemas/SessionActiveMessage"
+          time_warning: "#/components/schemas/TimeWarningMessage"
+          session_ended: "#/components/schemas/SessionEndedMessage"
+          credits_settled: "#/components/schemas/CreditsSettledMessage"
+          error: "#/components/schemas/ErrorMessage"
+    RecorderToServerMessage:
+      description: All messages that the Recording Agent sends to the server.
+      oneOf:
+        - $ref: "#/components/schemas/RecordReadyMessage"
+        - $ref: "#/components/schemas/RecordingStatusMessage"
+        - $ref: "#/components/schemas/SdpAnswerMessage"
+        - $ref: "#/components/schemas/IceCandidateMessage"
+      discriminator:
+        propertyName: type
+        mapping:
+          record_ready: "#/components/schemas/RecordReadyMessage"
+          recording_status: "#/components/schemas/RecordingStatusMessage"
+          sdp_answer: "#/components/schemas/SdpAnswerMessage"
+          ice_candidate: "#/components/schemas/IceCandidateMessage"
+    ServerToRecorderMessage:
+      description: All messages that the server sends to the Recording Agent.
+      oneOf:
+        - $ref: "#/components/schemas/RecordStartMessage"
+        - $ref: "#/components/schemas/RecordStopMessage"
+        - $ref: "#/components/schemas/SdpOfferMessage"
+        - $ref: "#/components/schemas/IceCandidateMessage"
+        - $ref: "#/components/schemas/ErrorMessage"
+      discriminator:
+        propertyName: type
+        mapping:
+          record_start: "#/components/schemas/RecordStartMessage"
+          record_stop: "#/components/schemas/RecordStopMessage"
+          sdp_offer: "#/components/schemas/SdpOfferMessage"
+          ice_candidate: "#/components/schemas/IceCandidateMessage"
+          error: "#/components/schemas/ErrorMessage"
+    KeyCode:
+      type: string
+      pattern: "^(Key[A-Z]|Digit[0-9]|Arrow(Up|Down|Left|Right)|Space|Enter|Escape|Shift(Left|Right))$"
+      description: |
+        Value of the browser's `KeyboardEvent.code`. Only these keys are on the whitelist (M5,
+        NFR-13): letters (`KeyA` to `KeyZ`), digits (`Digit0` to `Digit9`), the four arrow keys,
+        `Space`, `Enter`, `Escape`, `ShiftLeft` and `ShiftRight`. The Host Agent silently ignores
+        every other code. Ctrl, Alt and the Windows key are never applied.
+      example: KeyW
+    DcKeyMessage:
+      type: object
+      description: Browser to Host Agent. A whitelisted key was pressed or released (M5).
+      required: [t, code, down]
+      additionalProperties: false
+      properties:
+        t:
+          type: string
+          enum: [key]
+        code:
+          $ref: "#/components/schemas/KeyCode"
+        down:
+          type: boolean
+          description: true = pressed, false = released.
+        seq:
+          type: integer
+          minimum: 0
+          description: Optional counter that grows with every key message, to help debugging.
+      example:
+        t: key
+        code: KeyW
+        down: true
+        seq: 1042
+    DcMouseMoveMessage:
+      type: object
+      description: Browser to Host Agent. Relative mouse movement since the last message (M5).
+      required: [t, dx, dy]
+      additionalProperties: false
+      properties:
+        t:
+          type: string
+          enum: [mouse_move]
+        dx:
+          type: integer
+        dy:
+          type: integer
+      example:
+        t: mouse_move
+        dx: 5
+        dy: -3
+    DcMouseButtonMessage:
+      type: object
+      description: Browser to Host Agent. Left or right mouse button pressed or released (M5). Other buttons are ignored.
+      required: [t, button, down]
+      additionalProperties: false
+      properties:
+        t:
+          type: string
+          enum: [mouse_button]
+        button:
+          type: string
+          enum: [left, right]
+        down:
+          type: boolean
+          description: true = pressed, false = released.
+      example:
+        t: mouse_button
+        button: left
+        down: true
+    DcMouseWheelMessage:
+      type: object
+      description: Browser to Host Agent. Mouse wheel scroll (M5).
+      required: [t, dy]
+      additionalProperties: false
+      properties:
+        t:
+          type: string
+          enum: [mouse_wheel]
+        dy:
+          type: integer
+          description: Scroll amount. Negative values scroll up.
+      example:
+        t: mouse_wheel
+        dy: -120
+    DcPingMessage:
+      type: object
+      description: Browser to Host Agent, every second. Used for the latency display (M7) and as the heartbeat (NFR-07).
+      required: [t, ts]
+      additionalProperties: false
+      properties:
+        t:
+          type: string
+          enum: [ping]
+        ts:
+          type: integer
+          format: int64
+          description: Browser time in milliseconds since 1970-01-01 when the ping was sent.
+      example:
+        t: ping
+        ts: 1730550000123
+    DcPongMessage:
+      type: object
+      description: Host Agent to Browser. Answer to `ping` with the same `ts`. The Browser computes the round-trip latency as the current time minus `ts`.
+      required: [t, ts]
+      additionalProperties: false
+      properties:
+        t:
+          type: string
+          enum: [pong]
+        ts:
+          type: integer
+          format: int64
+          description: Same value as in the `ping` it answers.
+      example:
+        t: pong
+        ts: 1730550000123
+    DataChannelMessage:
+      description: Every message on the WebRTC data channel `control`, in both directions. Browser to Host Agent - `key`, `mouse_move`, `mouse_button`, `mouse_wheel`, `ping`. Host Agent to Browser - `pong`.
+      oneOf:
+        - $ref: "#/components/schemas/DcKeyMessage"
+        - $ref: "#/components/schemas/DcMouseMoveMessage"
+        - $ref: "#/components/schemas/DcMouseButtonMessage"
+        - $ref: "#/components/schemas/DcMouseWheelMessage"
+        - $ref: "#/components/schemas/DcPingMessage"
+        - $ref: "#/components/schemas/DcPongMessage"
+      discriminator:
+        propertyName: t
+        mapping:
+          key: "#/components/schemas/DcKeyMessage"
+          mouse_move: "#/components/schemas/DcMouseMoveMessage"
+          mouse_button: "#/components/schemas/DcMouseButtonMessage"
+          mouse_wheel: "#/components/schemas/DcMouseWheelMessage"
+          ping: "#/components/schemas/DcPingMessage"
+          pong: "#/components/schemas/DcPongMessage"
